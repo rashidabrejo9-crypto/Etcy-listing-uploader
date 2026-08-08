@@ -10,7 +10,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3003;
-const PUBLIC_DIR = path.join(process.cwd(), "public");
+const PUBLIC_DIR = process.cwd();
 const upload = multer({ dest: path.join(process.cwd(), "tmp") });
 
 app.use(express.json({ limit: "2mb" }));
