@@ -356,10 +356,10 @@ app.patch("/api/listings/:listingId", async (req, res) => {
   }
 });
 
-    if (process.env.VERCEL !== "1") {app.listen(PORT, () => {
+    if (process.env.VERCEL !== "1") {
+  app.listen(PORT, () => {
     console.log(`Etsy Listing Uploader running at http://localhost:${PORT}`);
   });
 }
 
 export default app;
-});
