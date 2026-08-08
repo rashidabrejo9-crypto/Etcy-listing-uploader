@@ -5,272 +5,68 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Etsy Listing Uploader</title>
 <style>
-:root{--bg:#f6f7fb;--card:#fff;--text:#18202a;--muted:#687386;--line:#e4e7ec;--accent:#7c3aed;--green:#15803d;--red:#b91c1c;--amber:#b45309}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}
-header{height:70px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px;position:sticky;top:0;z-index:10}
-.brand{font-weight:900;font-size:19px}.brand span{color:var(--accent)}
-button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.primary{background:var(--accent);color:#fff}.secondary{background:#f0eefc;color:#5b21b6}.ghost{background:#fff;border:1px solid var(--line)}.danger{background:#fee2e2;color:var(--red)}
-main{max-width:1220px;margin:25px auto;padding:0 18px}.top{display:flex;justify-content:space-between;gap:15px;align-items:center;margin-bottom:18px}.top h1{margin:0 0 5px;font-size:27px}.muted{color:var(--muted);font-size:13px}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:17px}.card .n{font-size:25px;font-weight:900;margin-top:5px}
-.toolbar{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}.search{flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:8px}
-.table{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden}.row{display:grid;grid-template-columns:35px 1.8fr .8fr .7fr .8fr 1.2fr;gap:10px;padding:13px 14px;border-bottom:1px solid var(--line);align-items:center}.head{background:#fafafa;font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:900}.actions{display:flex;gap:5px;flex-wrap:wrap}.actions button{padding:7px 9px;font-size:11px}
-.badge{font-size:11px;font-weight:900;padding:5px 8px;border-radius:99px;display:inline-block}.active{background:#ecfdf3;color:var(--green)}.draft{background:#fff7ed;color:var(--amber)}.offline{background:#fee2e2;color:var(--red)}
-.modal{position:fixed;inset:0;background:#0008;display:none;align-items:center;justify-content:center;padding:18px;z-index:20}.modal.show{display:flex}.dialog{width:min(980px,100%);max-height:94vh;overflow:auto;background:#fff;border-radius:16px;padding:21px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}label{font-size:12px;font-weight:900;display:block;margin-bottom:6px}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}textarea{min-height:115px;resize:vertical}.full{grid-column:1/-1}.section{border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}.section h3{margin:0 0 11px;font-size:15px}.uploads{display:grid;grid-template-columns:1fr 1fr;gap:10px}.upload{border:1px dashed #b9bfca;border-radius:10px;padding:12px;background:#fafbfc}.footer{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}.tagline{display:flex;justify-content:space-between;margin-top:6px}.log{background:#10131a;color:#d9dee8;border-radius:10px;padding:12px;font:12px ui-monospace,monospace;max-height:180px;overflow:auto;white-space:pre-wrap}
-.notice{padding:10px 12px;border-radius:10px;background:#f5f3ff;color:#5b21b6;margin-bottom:14px;font-size:13px}.error{background:#fff1f2;color:var(--red)}.success{background:#ecfdf3;color:var(--green)}
-@media(max-width:850px){.cards{grid-template-columns:1fr 1fr}.row{grid-template-columns:30px 1fr}.row>*:not(:first-child):not(:nth-child(2)){display:none}.grid{grid-template-columns:1fr}.full{grid-column:auto}.uploads{grid-template-columns:1fr}}
+body{font-family:Arial,sans-serif;max-width:900px;margin:30px auto;padding:0 16px;background:#fafafa;color:#222}
+.card{background:white;border:1px solid #ddd;border-radius:12px;padding:20px;margin:16px 0}
+button{padding:10px 16px;border:0;border-radius:8px;cursor:pointer}
+input,textarea,select{width:100%;box-sizing:border-box;margin:6px 0 14px;padding:10px;border:1px solid #ccc;border-radius:7px}
+#status{white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #ddd;text-align:left}
 </style>
 </head>
 <body>
-<header>
-  <div class="brand">Etsy <span>Listing Uploader</span></div>
-  <div style="display:flex;gap:8px;align-items:center">
-    <span id="connection" class="badge offline">Not connected</span>
-    <button class="primary" onclick="connectEtsy()">Connect Etsy Shop</button>
-  </div>
-</header>
-
-<main>
-  <div class="top">
-    <div><h1>Listing Dashboard</h1><div class="muted">Create, validate, upload media and publish Etsy listings from one place.</div></div>
-    <button class="primary" onclick="openEditor()">+ New Listing</button>
-  </div>
-
-  <div id="notice" class="notice">Connect your Etsy shop to load real shop data and publish listings.</div>
-
-  <div class="cards">
-    <div class="card"><div class="muted">Active</div><div class="n" id="activeCount">0</div></div>
-    <div class="card"><div class="muted">Drafts</div><div class="n" id="draftCount">0</div></div>
-    <div class="card"><div class="muted">Selected</div><div class="n" id="selectedCount">0</div></div>
-    <div class="card"><div class="muted">Shop</div><div class="n" id="shopName" style="font-size:17px">—</div></div>
-  </div>
-
-  <div class="toolbar">
-    <select id="state" onchange="loadListings()"><option value="active">Active</option><option value="draft">Drafts</option><option value="inactive">Inactive</option><option value="sold_out">Sold out</option></select>
-    <input class="search" id="search" placeholder="Search title..." oninput="renderListings()">
-    <button class="ghost" onclick="selectAllVisible()">Select All</button>
-    <button class="secondary" onclick="bulkPublish()">Publish Selected</button>
-    <button class="ghost" onclick="loadListings()">Refresh</button>
-  </div>
-
-  <div class="table">
-    <div class="row head"><div></div><div>Listing</div><div>Price</div><div>Qty</div><div>Status</div><div>Actions</div></div>
-    <div id="list"></div>
-  </div>
-</main>
-
-<div class="modal" id="editor">
-<div class="dialog">
-<h2 id="editorTitle">New Etsy Listing</h2>
-<div class="grid">
-  <div class="full"><label>Product Title *</label><input id="title" maxlength="140"></div>
-  <div class="full"><label>Description *</label><textarea id="description"></textarea></div>
-  <div><label>Price (USD) *</label><input id="price" type="number" min="0.01" step="0.01"></div>
-  <div><label>Quantity *</label><input id="quantity" type="number" min="1" value="999"></div>
-  <div><label>SKU / Internal Reference</label><input id="sku"></div>
-  <div><label>Taxonomy ID *</label><input id="taxonomy" type="number" min="1" placeholder="Etsy seller taxonomy ID"></div>
-  <div><label>Who Made *</label><select id="whoMade"><option value="i_did">I did</option><option value="someone_else">Someone else</option><option value="collective">Collective</option></select></div>
-  <div><label>When Made *</label><select id="whenMade"><option value="made_to_order">Made to order</option><option value="2020_2026">2020–2026</option><option value="2010_2019">2010–2019</option><option value="2007_2009">2007–2009</option><option value="before_2007">Before 2007</option></select></div>
-  <div><label>Auto Renew</label><select id="renew"><option value="false">No</option><option value="true">Yes</option></select></div>
-  <div><label>Taxable</label><select id="taxable"><option value="false">No</option><option value="true">Yes</option></select></div>
+<h1>🛍️ Etsy Listing Uploader</h1>
+<div class="card">
+  <h2>Connect Etsy Shop</h2>
+  <button id="connect">Connect Etsy</button>
+  <div id="status">Checking connection…</div>
 </div>
 
-<div class="section">
-<h3>Etsy Tags</h3>
-<textarea id="tags" placeholder="one tag per line"></textarea>
-<div class="tagline"><small id="tagCount" class="muted">0 / 13 tags</small><small class="muted">Maximum 13 tags</small></div>
+<div class="card" id="shopCard" hidden>
+  <h2>Shop</h2>
+  <select id="shops"></select>
+  <button id="load">Load Listings</button>
 </div>
 
-<div class="section">
-<h3>Media & Digital Product</h3>
-<div class="uploads">
-  <div class="upload"><label>Listing Images</label><input id="images" type="file" accept="image/*" multiple><small class="muted">First image is uploaded at rank 1.</small></div>
-  <div class="upload"><label>Digital PDF / ZIP / File</label><input id="digitalFile" type="file"><small class="muted">Used for a digital download listing.</small></div>
-  <div class="upload"><label>Listing Video</label><input id="video" type="file" accept="video/*"><small class="muted">Optional.</small></div>
-</div>
-</div>
-
-<div class="section">
-<h3>Upload / Publish Log</h3>
-<div id="log" class="log">Ready.</div>
-</div>
-
-<div class="footer">
-<button class="ghost" onclick="closeEditor()">Cancel</button>
-<button class="secondary" onclick="saveLocal()">Save Local Draft</button>
-<button class="primary" onclick="createAndPublish()">Upload & Publish</button>
-</div>
-</div>
+<div class="card" id="listCard" hidden>
+  <h2>Listings</h2>
+  <table><thead><tr><th>ID</th><th>Title</th><th>Price</th></tr></thead><tbody id="rows"></tbody></table>
 </div>
 
 <script>
-let sessionId = localStorage.getItem("etsySession") || "";
-let shopId = localStorage.getItem("etsyShopId") || "";
-let shop = null;
-let listings = [];
-let selected = new Set();
-
-const $ = id => document.getElementById(id);
-function api(path, options={}) {
-  options.headers = {...(options.headers||{}), ...(sessionId ? {"x-session-id":sessionId}:{})};
-  return fetch(path, options).then(async r => {
-    const data = await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data.error || data.error_description || `HTTP ${r.status}`);
-    return data;
-  });
+const $=id=>document.getElementById(id);
+async function api(url,opts={}) {
+  const r=await fetch(url,opts);
+  const text=await r.text();
+  let data; try{data=JSON.parse(text)}catch{throw new Error("API returned non-JSON: "+text.slice(0,120))}
+  if(!r.ok) throw new Error(data.error||JSON.stringify(data));
+  return data;
 }
-function note(msg, type="") {
-  $("notice").className = "notice " + type;
-  $("notice").textContent = msg;
-}
-function log(msg) {
-  $("log").textContent += "\\n" + msg;
-  $("log").scrollTop = $("log").scrollHeight;
-}
-function tags() {
-  return $("tags").value.split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean);
-}
-function updateTagCount() {
-  const n=tags().length;
-  $("tagCount").textContent=`${n} / 13 tags`;
-  $("tagCount").style.color=n>13?"#b91c1c":n===13?"#15803d":"#687386";
-}
-$("tags").addEventListener("input",updateTagCount);
-
-async function connectEtsy(){
-  try {
-    const x=await fetch("/api/auth/start").then(r=>r.json());
-    if(!x.authorizeUrl) throw new Error(x.error||"Could not start OAuth");
-    localStorage.setItem("etsySession",x.sessionId);
-    sessionId=x.sessionId;
-    location.href=x.authorizeUrl;
-  } catch(e){ note(e.message,"error"); }
-}
-async function init(){
-  if(new URLSearchParams(location.search).get("session")){
-    sessionId=new URLSearchParams(location.search).get("session");
-    localStorage.setItem("etsySession",sessionId);
-    history.replaceState({}, "", "/");
-  }
-  if(!sessionId) return;
+async function check(){
   try{
     const me=await api("/api/me");
-    $("connection").textContent="Connected";
-    $("connection").className="badge active";
-    const shops=await api("/api/shops");
-    shop=(shops.results||[])[0];
-    if(shop){shopId=String(shop.shop_id);localStorage.setItem("etsyShopId",shopId);$("shopName").textContent=shop.shop_name||"Connected";loadListings();}
-    note(`Connected to ${shop?.shop_name||"Etsy"}.`);
-  }catch(e){note("Etsy connection needs attention: "+e.message,"error");}
+    if(me.connected){$("status").textContent="✅ Etsy connected"; await shops();}
+    else $("status").textContent="Not connected";
+  }catch(e){$("status").textContent=e.message}
 }
-async function loadListings(){
-  if(!shopId)return;
+$("connect").onclick=async()=>{
+  try{const x=await api("/api/auth/start"); location.href=x.authorizeUrl}
+  catch(e){$("status").textContent=e.message}
+};
+async function shops(){
+  const x=await api("/api/shops");
+  $("shops").innerHTML=(x.results||[]).map(s=>`<option value="${s.shop_id}">${s.shop_name}</option>`).join("");
+  $("shopCard").hidden=false;
+}
+$("load").onclick=async()=>{
   try{
-    const data=await api(`/api/listings?shop_id=${encodeURIComponent(shopId)}&state=${encodeURIComponent($("state").value)}&limit=100`);
-    listings=data.results||[];
-    selected.clear();
-    renderListings();
-  }catch(e){note("Could not load listings: "+e.message,"error");}
-}
-function renderListings(){
-  const q=$("search").value.toLowerCase();
-  const visible=listings.filter(x=>(x.title||"").toLowerCase().includes(q));
-  $("list").innerHTML=visible.map(x=>`
-    <div class="row">
-      <div><input type="checkbox" ${selected.has(x.listing_id)?"checked":""} onchange="toggle(${x.listing_id},this.checked)"></div>
-      <div><b>${escapeHtml(x.title||"Untitled")}</b><div class="muted">#${x.listing_id}</div></div>
-      <div>$${Number(x.price?.amount||0)/Number(x.price?.divisor||100)}</div>
-      <div>${x.quantity??"-"}</div>
-      <div><span class="badge ${x.state==="active"?"active":"draft"}">${x.state}</span></div>
-      <div class="actions">
-        ${x.state==="draft"?`<button class="primary" onclick="publish(${x.listing_id})">Publish</button>`:""}
-        <button class="ghost" onclick="window.open('${x.url||"#"}','_blank')">Open</button>
-      </div>
-    </div>`).join("") || `<div style="padding:25px;text-align:center" class="muted">No listings found.</div>`;
-  $("activeCount").textContent=listings.filter(x=>x.state==="active").length;
-  $("draftCount").textContent=listings.filter(x=>x.state==="draft").length;
-  $("selectedCount").textContent=selected.size;
-}
-function toggle(id,v){v?selected.add(id):selected.delete(id);renderListings();}
-function selectAllVisible(){listings.filter(x=>(x.title||"").toLowerCase().includes($("search").value.toLowerCase())).forEach(x=>selected.add(x.listing_id));renderListings();}
-function openEditor(){ $("editorTitle").textContent="New Etsy Listing"; $("log").textContent="Ready."; $("editor").classList.add("show"); }
-function closeEditor(){ $("editor").classList.remove("show"); }
-function saveLocal(){
-  const local=JSON.parse(localStorage.getItem("etsyLocalDrafts")||"[]");
-  local.unshift({
-    title:$("title").value,description:$("description").value,price:$("price").value,quantity:$("quantity").value,
-    sku:$("sku").value,taxonomy_id:$("taxonomy").value,tags:tags(),saved_at:new Date().toISOString()
-  });
-  localStorage.setItem("etsyLocalDrafts",JSON.stringify(local));
-  note("Local draft saved. It is not yet on Etsy.","success");
-}
-function validate(){
-  if(!shopId) throw new Error("Connect an Etsy shop first.");
-  if(!$("title").value.trim()) throw new Error("Title is required.");
-  if(!$("description").value.trim()) throw new Error("Description is required.");
-  if(Number($("price").value)<=0) throw new Error("Price must be greater than 0.");
-  if(Number($("quantity").value)<1) throw new Error("Quantity must be at least 1.");
-  if(Number($("taxonomy").value)<1) throw new Error("Taxonomy ID is required.");
-  const t=tags();
-  if(t.length>13) throw new Error(`You entered ${t.length} tags. Etsy allows a maximum of 13.`);
-  return t;
-}
-async function createAndPublish(){
-  try{
-    const t=validate();
-    $("log").textContent="Starting Etsy upload...";
-    const payload={
-      shop_id:shopId,title:$("title").value.trim(),description:$("description").value,
-      price:Number($("price").value),quantity:Number($("quantity").value),
-      taxonomy_id:Number($("taxonomy").value),who_made:$("whoMade").value,when_made:$("whenMade").value,
-      tags:t,type:"download",is_taxable:$("taxable").value==="true",should_auto_renew:$("renew").value==="true"
-    };
-    const draft=await api("/api/listings/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    const id=draft.listing_id;
-    log(`Draft created: #${id}`);
-
-    const imgs=[...$("images").files];
-    for(let i=0;i<imgs.length;i++){
-      const fd=new FormData();fd.append("image",imgs[i]);fd.append("shop_id",shopId);fd.append("rank",String(i+1));
-      await api(`/api/listings/${id}/image`,{method:"POST",body:fd});
-      log(`Image ${i+1}/${imgs.length} uploaded`);
-    }
-    if($("digitalFile").files[0]){
-      const fd=new FormData();fd.append("file",$("digitalFile").files[0]);fd.append("shop_id",shopId);
-      await api(`/api/listings/${id}/file`,{method:"POST",body:fd});
-      log("Digital file uploaded");
-    }
-    if($("video").files[0]){
-      const fd=new FormData();fd.append("video",$("video").files[0]);fd.append("shop_id",shopId);
-      await api(`/api/listings/${id}/video`,{method:"POST",body:fd});
-      log("Video uploaded");
-    }
-    if(!imgs.length) throw new Error("At least one listing image is required before publishing.");
-    await api(`/api/listings/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({shop_id:shopId,state:"active",type:"download"})});
-    log(`Listing #${id} is now active on Etsy.`);
-    note(`Published successfully: listing #${id}`,"success");
-    closeEditor();
-    $("state").value="active";loadListings();
-  }catch(e){log("ERROR: "+e.message);note(e.message,"error");}
-}
-async function publish(id){
-  if(!confirm("Publish this Etsy draft now?"))return;
-  try{
-    const x=listings.find(a=>a.listing_id===id);
-    await api(`/api/listings/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({shop_id:shopId,state:"active"})});
-    note(`Listing #${id} published.`,"success");loadListings();
-  }catch(e){note("Publish failed: "+e.message,"error");}
-}
-async function bulkPublish(){
-  if(!selected.size)return note("Select at least one draft.","error");
-  if(!confirm(`Publish ${selected.size} selected listing(s)?`))return;
-  for(const id of selected){
-    try{await api(`/api/listings/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({shop_id:shopId,state:"active"})});}
-    catch(e){note(`Listing #${id} failed: ${e.message}`,"error");}
-  }
-  selected.clear();loadListings();
-}
-function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
-init();
+    const id=$("shops").value;
+    const x=await api("/api/listings?shop_id="+encodeURIComponent(id));
+    $("rows").innerHTML=(x.results||[]).map(l=>`<tr><td>${l.listing_id}</td><td>${escapeHtml(l.title||"")}</td><td>${l.price?.amount??""} ${l.price?.divisor?"":" "}</td></tr>`).join("");
+    $("listCard").hidden=false;
+  }catch(e){$("status").textContent=e.message}
+};
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+check();
 </script>
 </body>
 </html>
