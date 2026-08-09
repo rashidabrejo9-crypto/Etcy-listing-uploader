@@ -6,67 +6,140 @@
 <title>Etsy Listing Uploader</title>
 <style>
 body{font-family:Arial,sans-serif;max-width:900px;margin:30px auto;padding:0 16px;background:#fafafa;color:#222}
-.card{background:white;border:1px solid #ddd;border-radius:12px;padding:20px;margin:16px 0}
-button{padding:10px 16px;border:0;border-radius:8px;cursor:pointer}
-input,textarea,select{width:100%;box-sizing:border-box;margin:6px 0 14px;padding:10px;border:1px solid #ccc;border-radius:7px}
-#status{white-space:pre-wrap}
-table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #ddd;text-align:left}
+.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:20px;margin:16px 0}
+button{padding:10px 16px;border:0;border-radius:8px;cursor:pointer;margin-right:8px}
+select{width:100%;padding:10px;margin:10px 0}
+#status{white-space:pre-wrap;margin-top:12px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}
+.success{color:green}.error{color:#b00020}
 </style>
 </head>
 <body>
-<h1>🛍️ Etsy Listing Uploader</h1>
+<h1>Etsy Listing Uploader</h1>
+
 <div class="card">
-  <h2>Connect Etsy Shop</h2>
-  <button id="connect">Connect Etsy</button>
-  <div id="status">Checking connection…</div>
+<h2>Etsy Connection</h2>
+<button id="connect">Connect Etsy Shop</button>
+<button id="logout">Logout</button>
+<div id="status">Checking connection…</div>
 </div>
 
 <div class="card" id="shopCard" hidden>
-  <h2>Shop</h2>
-  <select id="shops"></select>
-  <button id="load">Load Listings</button>
+<h2>Shop</h2>
+<select id="shops"></select>
+<button id="loadListings">Load Listings</button>
 </div>
 
 <div class="card" id="listCard" hidden>
-  <h2>Listings</h2>
-  <table><thead><tr><th>ID</th><th>Title</th><th>Price</th></tr></thead><tbody id="rows"></tbody></table>
+<h2>Listings</h2>
+<table>
+<thead><tr><th>ID</th><th>Title</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
 </div>
 
 <script>
-const $=id=>document.getElementById(id);
-async function api(url,opts={}) {
-  const r=await fetch(url,opts);
-  const text=await r.text();
-  let data; try{data=JSON.parse(text)}catch{throw new Error("API returned non-JSON: "+text.slice(0,120))}
-  if(!r.ok) throw new Error(data.error||JSON.stringify(data));
+const $ = id => document.getElementById(id);
+
+async function api(url, options = {}) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    ...options
+  });
+
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error(text || `HTTP ${response.status}`); }
+
+  if (!response.ok) {
+    throw new Error(data.error || JSON.stringify(data));
+  }
   return data;
 }
-async function check(){
-  try{
-    const me=await api("/api/me");
-    if(me.connected){$("status").textContent="✅ Etsy connected"; await shops();}
-    else $("status").textContent="Not connected";
-  }catch(e){$("status").textContent=e.message}
+
+function status(message, error = false) {
+  $("status").textContent = message;
+  $("status").className = error ? "error" : "success";
 }
-$("connect").onclick=async()=>{
-  try{const x=await api("/api/auth/start"); location.href=x.authorizeUrl}
-  catch(e){$("status").textContent=e.message}
-};
-async function shops(){
-  const x=await api("/api/shops");
-  $("shops").innerHTML=(x.results||[]).map(s=>`<option value="${s.shop_id}">${s.shop_name}</option>`).join("");
-  $("shopCard").hidden=false;
+
+async function loadShops() {
+  const data = await api("/api/shops");
+  const shops = data.results || [];
+
+  if (!shops.length) {
+    throw new Error("Etsy connected, but no shop was returned.");
+  }
+
+  $("shops").innerHTML = shops.map(shop =>
+    `<option value="${shop.shop_id}">${escapeHtml(shop.shop_name || shop.shop_id)}</option>`
+  ).join("");
+
+  $("shopCard").hidden = false;
+  status(`✅ Connected. Found ${shops.length} shop(s).`);
 }
-$("load").onclick=async()=>{
-  try{
-    const id=$("shops").value;
-    const x=await api("/api/listings?shop_id="+encodeURIComponent(id));
-    $("rows").innerHTML=(x.results||[]).map(l=>`<tr><td>${l.listing_id}</td><td>${escapeHtml(l.title||"")}</td><td>${l.price?.amount??""} ${l.price?.divisor?"":" "}</td></tr>`).join("");
-    $("listCard").hidden=false;
-  }catch(e){$("status").textContent=e.message}
+
+async function checkConnection() {
+  try {
+    const me = await api("/api/me");
+    if (!me.connected) {
+      status("Not connected.");
+      return;
+    }
+    await loadShops();
+  } catch (error) {
+    status(error.message, true);
+  }
+}
+
+$("connect").onclick = async () => {
+  try {
+    status("Opening Etsy authorization…");
+    const data = await api("/api/auth/start");
+    window.location.href = data.authorizeUrl;
+  } catch (error) {
+    status(error.message, true);
+  }
 };
-function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-check();
+
+$("logout").onclick = async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+    window.location.reload();
+  } catch (error) {
+    status(error.message, true);
+  }
+};
+
+$("loadListings").onclick = async () => {
+  try {
+    const shopId = $("shops").value;
+    const data = await api(
+      "/api/listings?shop_id=" + encodeURIComponent(shopId)
+    );
+
+    $("rows").innerHTML = (data.results || []).map(listing =>
+      `<tr><td>${listing.listing_id}</td><td>${escapeHtml(listing.title || "")}</td></tr>`
+    ).join("");
+
+    $("listCard").hidden = false;
+  } catch (error) {
+    status(error.message, true);
+  }
+};
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#39;"
+  }[char]));
+}
+
+checkConnection();
 </script>
 </body>
 </html>
