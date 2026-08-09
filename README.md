@@ -1,40 +1,52 @@
-# Etsy Listing Uploader Dashboard
+# Etsy Listing Uploader — Professional Vercel Build
 
-A working starter dashboard based on the uploaded prototype, upgraded for Etsy Open API v3.
+## Required Vercel environment variables
 
-## Included
+Set these in **Production**:
 
-- Etsy OAuth 2.0 Authorization Code flow with PKCE
-- Server-side API key/shared-secret handling
-- Shop discovery
-- Active/draft listing loading
-- Listing creation as a real Etsy draft
-- Up to 13 tags in the UI
-- Etsy listing images upload
-- Digital file upload
-- Listing video upload
-- Draft -> active publishing through Etsy API
-- Local browser draft management
-- Search, filters, bulk workflow UI
-- Validation for required Etsy fields
-- No Etsy secrets in browser JavaScript
+- `ETSY_KEYSTRING` = your Etsy keystring
+- `ETSY_SHARED_SECRET` = your Etsy shared secret
+- `ETSY_REDIRECT_URI` = `https://etsy-listing-uploader.vercel.app/oauth/callback`
+- `SESSION_SECRET` = a long random secret (different from the Etsy shared secret)
 
-## Important Etsy setup
+After changing environment variables, create a **new deployment**.
 
-1. Create/configure an Etsy Open API app.
-2. Add your exact HTTPS callback URL in Etsy Developer Portal.
-3. Copy the app keystring and shared secret into `.env`.
-4. Use the same redirect URI in `.env`.
-5. Run `npm install` then `npm start`.
-6. Open the dashboard and click Connect Etsy Shop.
+## Etsy Developer App
 
-For local development, use the callback URL supported by your Etsy app configuration. Etsy requires registered redirect URIs to match exactly; production OAuth should use HTTPS.
+The Redirect URI must be exactly:
 
-## Notes
+https://etsy-listing-uploader.vercel.app/oauth/callback
 
-- Etsy write endpoints require OAuth and appropriate scopes. This project requests `shops_r listings_r listings_w`.
-- The dashboard intentionally keeps the Etsy shared secret on the server.
-- OAuth sessions are in memory for this starter. For production, use a database/session store and encrypted token storage.
-- The SKU field in the original prototype is kept as a local planning field. Etsy inventory/SKU management is a separate API workflow and is not silently faked.
-- Taxonomy ID is required for reliable listing creation; enter the correct Etsy seller taxonomy ID for the product.
-- Publishing an Etsy draft to active requires the listing image requirement to be satisfied.
+Do not add a trailing slash.
+
+## Important
+
+Do not put Etsy credentials in frontend JavaScript.
+
+This build uses encrypted HttpOnly cookies instead of an in-memory Map, so OAuth state/session survives Vercel serverless instance changes.
+
+The access token user ID is extracted from the access token prefix and the refresh token is used when the access token is close to expiry.
+
+## Deployment
+
+Upload/replace these files in the GitHub repository:
+
+- `server.js`
+- `api/index.js`
+- `index.html`
+- `vercel.json`
+- `package.json`
+
+Then deploy the new commit on Vercel.
+
+## Verification
+
+Open:
+
+`https://etsy-listing-uploader.vercel.app/api/config`
+
+It should report the configured redirect URI.
+
+Then open the home page and use **Connect Etsy Shop**.
+
+Do not test by manually pasting an old Etsy callback URL. Every connection attempt must start from the app so the OAuth state cookie is created first.
