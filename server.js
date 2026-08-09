@@ -3,1103 +3,578 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
-import path from "path";
 
 dotenv.config();
 
 const app = express();
+const upload = multer({ dest: "/tmp/etsy-listing-uploader" });
 
-const PORT = process.env.PORT || 3003;
-const PUBLIC_DIR = process.cwd();
-
-const upload = multer({
-  dest: "/tmp"
-});
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(process.cwd()));
 
 const SESSION_COOKIE = "etsy_session";
+const OAUTH_COOKIE = "etsy_oauth";
+const CALLBACK_DEFAULT = "https://etsy-listing-uploader.vercel.app/oauth/callback";
+const SESSION_TTL = 60 * 60 * 1000;
+const OAUTH_TTL = 10 * 60 * 1000;
 
-/*
- * IMPORTANT:
- * Keep this exactly the same as your Vercel Production domain.
- */
-const REDIRECT_URI =
-  process.env.ETSY_REDIRECT_URI ||
-  "https://etcy-listing-uploader.vercel.app/oauth/callback";
-
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(PUBLIC_DIR));
-
-/* ---------------------------------------------------------
-   BASIC HELPERS
---------------------------------------------------------- */
-
-function requireEnv(name) {
+function env(name) {
   const value = process.env[name];
-
-  if (!value) {
-    throw new Error(`Missing ${name} in environment variables`);
-  }
-
+  if (!value) throw new Error(`Missing ${name} environment variable`);
   return value;
 }
 
-function base64url(value) {
-  return Buffer.from(value).toString("base64url");
+function redirectUri() {
+  return process.env.ETSY_REDIRECT_URI || CALLBACK_DEFAULT;
 }
 
-function randomString(bytes = 32) {
-  return crypto.randomBytes(bytes).toString("base64url");
+function b64(value) {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
-/* ---------------------------------------------------------
-   SIGNED STATE
---------------------------------------------------------- */
-
-function getSessionSecret() {
-  return requireEnv("SESSION_SECRET");
+function unb64(value) {
+  const s = String(value);
+  const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+  return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64");
 }
 
-function signValue(payload) {
-  const encoded = base64url(
-    JSON.stringify(payload)
-  );
-
-  const signature = crypto
-    .createHmac(
-      "sha256",
-      getSessionSecret()
-    )
-    .update(encoded)
-    .digest("base64url");
-
-  return `${encoded}.${signature}`;
+function cryptoKey() {
+  return crypto.createHash("sha256").update(env("SESSION_SECRET")).digest();
 }
 
-function verifyValue(value) {
+function seal(payload) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", cryptoKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final()
+  ]);
+  return `${b64(iv)}.${b64(cipher.getAuthTag())}.${b64(encrypted)}`;
+}
+
+function unseal(value) {
   try {
-    const parts = String(value || "").split(".");
+    if (!value) return null;
+    const [ivText, tagText, dataText] = String(value).split(".");
+    if (!ivText || !tagText || !dataText) return null;
 
-    if (parts.length !== 2) {
-      return null;
-    }
-
-    const [encoded, signature] = parts;
-
-    const expected = crypto
-      .createHmac(
-        "sha256",
-        getSessionSecret()
-      )
-      .update(encoded)
-      .digest("base64url");
-
-    const a = Buffer.from(signature);
-    const b = Buffer.from(expected);
-
-    if (
-      a.length !== b.length ||
-      !crypto.timingSafeEqual(a, b)
-    ) {
-      return null;
-    }
-
-    const payload = JSON.parse(
-      Buffer.from(
-        encoded,
-        "base64url"
-      ).toString("utf8")
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      cryptoKey(),
+      unb64(ivText)
     );
+    decipher.setAuthTag(unb64(tagText));
 
-    if (
-      payload.exp &&
-      Number(payload.exp) < Date.now()
-    ) {
-      return null;
-    }
+    const plain = Buffer.concat([
+      decipher.update(unb64(dataText)),
+      decipher.final()
+    ]).toString("utf8");
 
-    return payload;
-
+    return JSON.parse(plain);
   } catch {
     return null;
   }
 }
 
-/* ---------------------------------------------------------
-   SESSION COOKIE
---------------------------------------------------------- */
-
-function setSessionCookie(res, payload) {
-  const value = signValue({
-    ...payload,
-    exp: Date.now() + 7 * 24 * 60 * 60 * 1000
-  });
-
-  res.setHeader(
-    "Set-Cookie",
-    `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`
-  );
+function cookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
 }
 
-function getCookie(req, name) {
-  const cookieHeader = req.headers.cookie || "";
-
-  const cookies = cookieHeader
-    .split(";")
-    .map(x => x.trim());
-
-  const item = cookies.find(
-    x => x.startsWith(`${name}=`)
-  );
-
-  if (!item) {
-    return null;
+function setCookie(res, name, value, maxAge) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    `Max-Age=${Math.floor(maxAge / 1000)}`,
+    "HttpOnly",
+    "SameSite=Lax"
+  ];
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+    parts.push("Secure");
   }
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
 
-  return item.slice(name.length + 1);
+function clearCookie(res, name) {
+  const parts = [
+    `${name}=`,
+    "Path=/",
+    "Max-Age=0",
+    "HttpOnly",
+    "SameSite=Lax"
+  ];
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+    parts.push("Secure");
+  }
+  res.setHeader("Set-Cookie", parts.join("; "));
 }
 
 function getSession(req) {
-  const raw = getCookie(
-    req,
-    SESSION_COOKIE
-  );
-
-  return raw ? verifyValue(raw) : null;
+  const session = unseal(cookies(req)[SESSION_COOKIE]);
+  if (!session?.accessToken || !session?.userId) return null;
+  if (session.expiresAt && Date.now() >= session.expiresAt) return null;
+  return session;
 }
 
-/* ---------------------------------------------------------
-   PKCE
---------------------------------------------------------- */
-
-function createPkce() {
-  const verifier = randomString(32);
-
-  const challenge = crypto
-    .createHash("sha256")
-    .update(verifier)
-    .digest("base64url");
-
+function apiHeaders(session) {
   return {
-    verifier,
-    challenge
+    "x-api-key": `${env("ETSY_KEYSTRING")}:${env("ETSY_SHARED_SECRET")}`,
+    Authorization: `Bearer ${session.accessToken}`
   };
 }
 
-/* ---------------------------------------------------------
-   ETSY API
---------------------------------------------------------- */
-
-function etsyHeaders(session) {
-  return {
-    "x-api-key":
-      `${requireEnv("ETSY_KEYSTRING")}:${requireEnv("ETSY_SHARED_SECRET")}`,
-
-    Authorization:
-      `Bearer ${session.accessToken}`
-  };
-}
-
-async function etsyFetch(
-  url,
-  options = {},
-  session
-) {
+async function etsyFetch(url, options = {}, session) {
   return fetch(url, {
     ...options,
-
     headers: {
       ...(options.headers || {}),
-      ...etsyHeaders(session)
+      ...apiHeaders(session)
     }
   });
 }
 
-/* ---------------------------------------------------------
-   HOME
---------------------------------------------------------- */
+async function refreshAccessToken(session) {
+  if (!session.refreshToken) return null;
 
-app.get("/", (req, res) => {
-  res.sendFile(
-    path.join(
-      PUBLIC_DIR,
-      "index.html"
-    )
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: env("ETSY_KEYSTRING"),
+    refresh_token: session.refreshToken
+  });
+
+  const response = await fetch(
+    "https://api.etsy.com/v3/public/oauth/token",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    }
   );
-});
 
-/* ---------------------------------------------------------
-   CONFIG
---------------------------------------------------------- */
+  const token = await response.json();
+  if (!response.ok) return null;
+
+  const accessToken = String(token.access_token || "");
+  if (!accessToken) return null;
+
+  const userId = accessToken.includes(".")
+    ? accessToken.split(".")[0]
+    : String(session.userId || "");
+
+  return {
+    accessToken,
+    refreshToken: token.refresh_token || session.refreshToken,
+    userId,
+    expiresAt: Date.now() + Number(token.expires_in || 3600) * 1000
+  };
+}
+
+async function getUsableSession(req, res) {
+  let session = getSession(req);
+  if (!session) return null;
+
+  if (session.expiresAt && Date.now() >= session.expiresAt - 30_000) {
+    const refreshed = await refreshAccessToken(session);
+    if (!refreshed) {
+      clearCookie(res, SESSION_COOKIE);
+      return null;
+    }
+    session = refreshed;
+    setCookie(res, SESSION_COOKIE, seal(session), SESSION_TTL);
+  }
+
+  return session;
+}
+
+function userIdFromAccessToken(accessToken) {
+  const token = String(accessToken || "");
+  return token.includes(".") ? token.split(".")[0] : "";
+}
 
 app.get("/api/config", (req, res) => {
   res.json({
     configured: Boolean(
       process.env.ETSY_KEYSTRING &&
       process.env.ETSY_SHARED_SECRET &&
-      process.env.SESSION_SECRET
+      process.env.SESSION_SECRET &&
+      redirectUri()
     ),
-
-    redirectUri: REDIRECT_URI
+    redirectUri: redirectUri()
   });
 });
 
-/* ---------------------------------------------------------
-   START ETSY OAUTH
---------------------------------------------------------- */
-
 app.get("/api/auth/start", (req, res) => {
   try {
-    const clientId =
-      requireEnv("ETSY_KEYSTRING");
+    const verifier = b64(crypto.randomBytes(32));
+    const challenge = b64(
+      crypto.createHash("sha256").update(verifier).digest()
+    );
+    const state = b64(crypto.randomBytes(32));
+    const callback = redirectUri();
 
-    const {
-      verifier,
-      challenge
-    } = createPkce();
-
-    /*
-     * IMPORTANT:
-     * The verifier is stored INSIDE the signed state.
-     *
-     * This removes the old dependency on a cookie
-     * existing before the Etsy callback.
-     */
-    const statePayload = {
-      verifier,
-      redirectUri: REDIRECT_URI,
-      exp: Date.now() + 10 * 60 * 1000
-    };
-
-    const state =
-      signValue(statePayload);
-
-    const params =
-      new URLSearchParams({
-        response_type: "code",
-        client_id: clientId,
-        redirect_uri: REDIRECT_URI,
-
-        scope:
-          "shops_r listings_r listings_w",
-
+    setCookie(
+      res,
+      OAUTH_COOKIE,
+      seal({
         state,
-
-        code_challenge: challenge,
-        code_challenge_method: "S256"
-      });
-
-    res.json({
-      authorizeUrl:
-        `https://www.etsy.com/oauth/connect?${params.toString()}`
-    });
-
-  } catch (error) {
-    console.error(
-      "OAuth start error:",
-      error
+        verifier,
+        redirectUri: callback,
+        createdAt: Date.now()
+      }),
+      OAUTH_TTL
     );
 
-    res.status(500).json({
-      error: error.message
+    const params = new URLSearchParams({
+      response_type: "code",
+      client_id: env("ETSY_KEYSTRING"),
+      redirect_uri: callback,
+      scope: "shops_r listings_r listings_w",
+      state,
+      code_challenge: challenge,
+      code_challenge_method: "S256"
     });
+
+    res.json({
+      authorizeUrl: `https://www.etsy.com/oauth/connect?${params.toString()}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-/* ---------------------------------------------------------
-   ETSY OAUTH CALLBACK
---------------------------------------------------------- */
+app.get("/oauth/callback", async (req, res) => {
+  const stored = unseal(cookies(req)[OAUTH_COOKIE]);
+  const { code, state, error, error_description } = req.query;
 
-app.get(
-  "/oauth/callback",
-  async (req, res) => {
+  clearCookie(res, OAUTH_COOKIE);
 
-    const {
-      code,
-      state,
-      error,
-      error_description
-    } = req.query;
-
-    if (error) {
-      return res.status(400).send(
-        `Etsy authorization failed: ${
-          error_description || error
-        }`
-      );
-    }
-
-    if (!state) {
-      return res.status(400).send(
-        "Missing OAuth state."
-      );
-    }
-
-    if (!code) {
-      return res.status(400).send(
-        "Missing authorization code."
-      );
-    }
-
-    /*
-     * Verify signed state.
-     * No pre-existing cookie is required anymore.
-     */
-    const stateData =
-      verifyValue(state);
-
-    if (!stateData) {
-      return res.status(400).send(
-        "Invalid or expired OAuth state. Please start Connect Etsy again."
-      );
-    }
-
-    if (
-      stateData.redirectUri !==
-      REDIRECT_URI
-    ) {
-      return res.status(400).send(
-        "OAuth redirect URI mismatch."
-      );
-    }
-
-    try {
-      const body =
-        new URLSearchParams({
-          grant_type:
-            "authorization_code",
-
-          client_id:
-            requireEnv("ETSY_KEYSTRING"),
-
-          redirect_uri:
-            REDIRECT_URI,
-
-          code:
-            String(code),
-
-          code_verifier:
-            stateData.verifier
-        });
-
-      const tokenResponse =
-        await fetch(
-          "https://api.etsy.com/v3/public/oauth/token",
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/x-www-form-urlencoded"
-            },
-
-            body
-          }
-        );
-
-      const token =
-        await tokenResponse.json();
-
-      if (!tokenResponse.ok) {
-        console.error(
-          "Etsy token error:",
-          token
-        );
-
-        throw new Error(
-          token.error_description ||
-          token.error ||
-          "Token exchange failed"
-        );
-      }
-
-      const userId =
-        token.user_id
-          ? String(token.user_id)
-          : "";
-
-      /*
-       * Save the Etsy login in a signed,
-       * HttpOnly cookie.
-       */
-      setSessionCookie(
-        res,
-        {
-          accessToken:
-            token.access_token,
-
-          refreshToken:
-            token.refresh_token || "",
-
-          userId,
-
-          redirectUri:
-            REDIRECT_URI
-        }
-      );
-
-      res.redirect(
-        "/?connected=1"
-      );
-
-    } catch (error) {
-
-      console.error(
-        "OAuth callback error:",
-        error
-      );
-
-      res.status(500).send(
-        `OAuth callback error: ${error.message}`
-      );
-    }
+  if (
+    !stored ||
+    !state ||
+    stored.state !== String(state) ||
+    Date.now() - Number(stored.createdAt || 0) > OAUTH_TTL
+  ) {
+    return res.status(400).send(
+      "Invalid or expired OAuth state. Start a new Etsy connection from the app."
+    );
   }
-);
 
-/* ---------------------------------------------------------
-   CURRENT USER
---------------------------------------------------------- */
+  if (error) {
+    return res.status(400).send(
+      `Etsy authorization failed: ${error_description || error}`
+    );
+  }
+
+  if (!code) {
+    return res.status(400).send("Missing Etsy authorization code.");
+  }
+
+  try {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: env("ETSY_KEYSTRING"),
+      redirect_uri: stored.redirectUri,
+      code: String(code),
+      code_verifier: stored.verifier
+    });
+
+    const response = await fetch(
+      "https://api.etsy.com/v3/public/oauth/token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body
+      }
+    );
+
+    const token = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        token.error_description ||
+        token.error ||
+        "Etsy token exchange failed"
+      );
+    }
+
+    const accessToken = String(token.access_token || "");
+    const userId = userIdFromAccessToken(accessToken);
+
+    if (!accessToken || !userId) {
+      throw new Error("Etsy returned an invalid access token.");
+    }
+
+    const session = {
+      accessToken,
+      refreshToken: String(token.refresh_token || ""),
+      userId,
+      expiresAt: Date.now() + Number(token.expires_in || 3600) * 1000
+    };
+
+    setCookie(res, SESSION_COOKIE, seal(session), SESSION_TTL);
+    return res.redirect("/?connected=1");
+  } catch (error) {
+    return res.status(500).send(`OAuth callback error: ${error.message}`);
+  }
+});
 
 app.get("/api/me", async (req, res) => {
   try {
-
-    const session =
-      getSession(req);
-
-    if (
-      !session?.accessToken
-    ) {
-      return res.status(401).json({
-        connected: false
-      });
-    }
+    const session = await getUsableSession(req, res);
+    if (!session) return res.status(401).json({ connected: false });
 
     res.json({
       connected: true,
-      userId:
-        session.userId || null
+      userId: session.userId,
+      expiresAt: session.expiresAt
     });
-
   } catch (error) {
-
-    res.status(500).json({
-      error: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-/* ---------------------------------------------------------
-   SHOPS
---------------------------------------------------------- */
+app.post("/api/auth/logout", (req, res) => {
+  clearCookie(res, SESSION_COOKIE);
+  res.json({ ok: true });
+});
 
 app.get("/api/shops", async (req, res) => {
   try {
+    const session = await getUsableSession(req, res);
+    if (!session) return res.status(401).json({ error: "Not connected" });
 
-    const session =
-      getSession(req);
-
-    if (
-      !session?.accessToken ||
-      !session?.userId
-    ) {
-      return res.status(401).json({
-        error: "Not connected"
-      });
-    }
-
-    const response =
-      await etsyFetch(
-        `https://api.etsy.com/v3/application/users/${session.userId}/shops`,
-        {},
-        session
-      );
-
-    const data =
-      await response.json();
+    const response = await etsyFetch(
+      `https://api.etsy.com/v3/application/users/${session.userId}/shops`,
+      {},
+      session
+    );
+    const data = await response.json();
 
     if (!response.ok) {
-      return res
-        .status(response.status)
-        .json(data);
+      if (response.status === 401) clearCookie(res, SESSION_COOKIE);
+      return res.status(response.status).json(data);
     }
 
     res.json(data);
-
   } catch (error) {
-
-    res.status(500).json({
-      error: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-/* ---------------------------------------------------------
-   LISTINGS
---------------------------------------------------------- */
+app.get("/api/listings", async (req, res) => {
+  try {
+    const session = await getUsableSession(req, res);
+    if (!session) return res.status(401).json({ error: "Not connected" });
 
-app.get(
-  "/api/listings",
-  async (req, res) => {
+    const shopId = String(req.query.shop_id || "");
+    if (!shopId) return res.status(400).json({ error: "shop_id is required" });
 
-    try {
+    const url = new URL(
+      `https://api.etsy.com/v3/application/shops/${shopId}/listings`
+    );
+    url.searchParams.set("state", String(req.query.state || "active"));
+    url.searchParams.set(
+      "limit",
+      String(Math.min(Math.max(Number(req.query.limit || 100), 1), 100))
+    );
+    url.searchParams.set(
+      "offset",
+      String(Math.max(Number(req.query.offset || 0), 0))
+    );
 
-      const session =
-        getSession(req);
+    const response = await etsyFetch(url, {}, session);
+    const data = await response.json();
 
-      if (!session?.accessToken) {
-        return res.status(401).json({
-          error: "Not connected"
-        });
-      }
-
-      const shopId =
-        req.query.shop_id;
-
-      if (!shopId) {
-        return res.status(400).json({
-          error:
-            "shop_id is required"
-        });
-      }
-
-      const state =
-        req.query.state ||
-        "active";
-
-      const limit =
-        Math.min(
-          Number(
-            req.query.limit || 100
-          ),
-          100
-        );
-
-      const offset =
-        Number(
-          req.query.offset || 0
-        );
-
-      const url =
-        new URL(
-          `https://api.etsy.com/v3/application/shops/${shopId}/listings`
-        );
-
-      url.searchParams.set(
-        "state",
-        state
-      );
-
-      url.searchParams.set(
-        "limit",
-        String(limit)
-      );
-
-      url.searchParams.set(
-        "offset",
-        String(offset)
-      );
-
-      const response =
-        await etsyFetch(
-          url,
-          {},
-          session
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        return res
-          .status(response.status)
-          .json(data);
-      }
-
-      res.json(data);
-
-    } catch (error) {
-
-      res.status(500).json({
-        error: error.message
-      });
-    }
+    if (!response.ok) return res.status(response.status).json(data);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
-
-/* ---------------------------------------------------------
-   TAGS
---------------------------------------------------------- */
+});
 
 function cleanTags(tags) {
-  return (tags || [])
-    .map(tag =>
-      String(tag).trim()
-    )
+  return (Array.isArray(tags) ? tags : [])
+    .map(tag => String(tag).trim())
     .filter(Boolean)
     .slice(0, 13);
 }
 
-/* ---------------------------------------------------------
-   CREATE DRAFT LISTING
---------------------------------------------------------- */
+app.post("/api/listings/draft", async (req, res) => {
+  try {
+    const session = await getUsableSession(req, res);
+    if (!session) return res.status(401).json({ error: "Not connected" });
 
-app.post(
-  "/api/listings/draft",
-  async (req, res) => {
+    const {
+      shop_id,
+      title,
+      description,
+      price,
+      quantity,
+      taxonomy_id,
+      who_made = "i_did",
+      when_made = "made_to_order",
+      tags = [],
+      type = "download",
+      is_supply = false,
+      is_taxable = false,
+      should_auto_renew = false
+    } = req.body;
 
-    try {
-
-      const session =
-        getSession(req);
-
-      if (!session?.accessToken) {
-        return res.status(401).json({
-          error: "Not connected"
-        });
-      }
-
-      const {
-        shop_id,
-        title,
-        description,
-        price,
-        quantity,
-        taxonomy_id,
-
-        who_made =
-          "i_did",
-
-        when_made =
-          "made_to_order",
-
-        tags = [],
-
-        type =
-          "download",
-
-        is_supply =
-          false,
-
-        is_taxable =
-          false,
-
-        should_auto_renew =
-          false
-      } = req.body;
-
-      if (
-        !shop_id ||
-        !title ||
-        !description ||
-        !price ||
-        !quantity ||
-        !taxonomy_id
-      ) {
-        return res.status(400).json({
-          error:
-            "shop_id, title, description, price, quantity and taxonomy_id are required."
-        });
-      }
-
-      const form =
-        new URLSearchParams();
-
-      form.set(
-        "quantity",
-        String(quantity)
-      );
-
-      form.set(
-        "title",
-        String(title)
-      );
-
-      form.set(
-        "description",
-        String(description)
-      );
-
-      form.set(
-        "price",
-        String(price)
-      );
-
-      form.set(
-        "who_made",
-        String(who_made)
-      );
-
-      form.set(
-        "when_made",
-        String(when_made)
-      );
-
-      form.set(
-        "taxonomy_id",
-        String(taxonomy_id)
-      );
-
-      form.set(
-        "tags",
-        cleanTags(tags).join(",")
-      );
-
-      form.set(
-        "type",
-        String(type)
-      );
-
-      form.set(
-        "is_supply",
-        String(Boolean(is_supply))
-      );
-
-      form.set(
-        "is_taxable",
-        String(Boolean(is_taxable))
-      );
-
-      form.set(
-        "should_auto_renew",
-        String(Boolean(should_auto_renew))
-      );
-
-      const response =
-        await etsyFetch(
-          `https://api.etsy.com/v3/application/shops/${shop_id}/listings`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/x-www-form-urlencoded; charset=utf-8"
-            },
-
-            body: form
-          },
-          session
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        return res
-          .status(response.status)
-          .json(data);
-      }
-
-      res.json(data);
-
-    } catch (error) {
-
-      res.status(500).json({
-        error: error.message
+    if (!shop_id || !title || !description || price === undefined ||
+        quantity === undefined || !taxonomy_id) {
+      return res.status(400).json({
+        error: "shop_id, title, description, price, quantity and taxonomy_id are required."
       });
     }
+
+    const form = new URLSearchParams();
+    form.set("quantity", String(quantity));
+    form.set("title", String(title));
+    form.set("description", String(description));
+    form.set("price", String(price));
+    form.set("who_made", String(who_made));
+    form.set("when_made", String(when_made));
+    form.set("taxonomy_id", String(taxonomy_id));
+    form.set("tags", cleanTags(tags).join(","));
+    form.set("type", String(type));
+    form.set("is_supply", String(Boolean(is_supply)));
+    form.set("is_taxable", String(Boolean(is_taxable)));
+    form.set("should_auto_renew", String(Boolean(should_auto_renew)));
+
+    const response = await etsyFetch(
+      `https://api.etsy.com/v3/application/shops/${shop_id}/listings`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
+        },
+        body: form
+      },
+      session
+    );
+
+    const data = await response.json();
+    if (!response.ok) return res.status(response.status).json(data);
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
-/* ---------------------------------------------------------
-   FILE UPLOAD HELPER
---------------------------------------------------------- */
-
-async function uploadToEtsy(
-  req,
-  res,
-  kind
-) {
-
-  const session =
-    getSession(req);
-
-  if (!session?.accessToken) {
-    return res.status(401).json({
-      error: "Not connected"
-    });
-  }
-
-  if (!req.file) {
-    return res.status(400).json({
-      error:
-        `${kind} file required`
-    });
-  }
+async function uploadToEtsy(req, res, kind) {
+  const session = await getUsableSession(req, res);
+  if (!session) return res.status(401).json({ error: "Not connected" });
+  if (!req.file) return res.status(400).json({ error: `${kind} file required` });
 
   try {
-
-    const form =
-      new FormData();
-
-    const buffer =
-      fs.readFileSync(
-        req.file.path
-      );
-
-    const blob =
-      new Blob(
-        [buffer],
-        {
-          type:
-            req.file.mimetype
-        }
-      );
+    const form = new FormData();
+    const bytes = fs.readFileSync(req.file.path);
 
     form.append(
       kind,
-      blob,
+      new Blob([bytes], { type: req.file.mimetype }),
       req.file.originalname
     );
 
     if (kind === "image") {
-      form.append(
-        "rank",
-        String(
-          req.body.rank || 1
-        )
-      );
-
-      if (req.body.alt_text) {
-        form.append(
-          "alt_text",
-          String(
-            req.body.alt_text
-          )
-        );
-      }
+      form.append("rank", String(req.body.rank || 1));
     }
 
     if (kind === "file") {
-      form.append(
-        "name",
-        req.file.originalname
-      );
-
-      form.append(
-        "rank",
-        "1"
-      );
+      form.append("name", req.file.originalname);
+      form.append("rank", "1");
     }
 
-    if (kind === "video") {
-      form.append(
-        "name",
-        req.file.originalname
-      );
-    }
+    const endpoint = kind === "image" ? "images" :
+      kind === "file" ? "files" : "videos";
 
-    const endpoint =
-      kind === "image"
-        ? "images"
-        : kind === "file"
-          ? "files"
-          : "videos";
-
-    const shopId =
-      req.body.shop_id;
-
-    if (!shopId) {
-      fs.unlink(
-        req.file.path,
-        () => {}
-      );
-
-      return res.status(400).json({
-        error:
-          "shop_id is required"
-      });
-    }
-
-    const response =
-      await etsyFetch(
-        `https://api.etsy.com/v3/application/shops/${shopId}/listings/${req.params.listingId}/${endpoint}`,
-        {
-          method: "POST",
-          body: form
-        },
-        session
-      );
-
-    const data =
-      await response.json();
-
-    fs.unlink(
-      req.file.path,
-      () => {}
+    const response = await etsyFetch(
+      `https://api.etsy.com/v3/application/shops/${req.body.shop_id}/listings/${req.params.listingId}/${endpoint}`,
+      { method: "POST", body: form },
+      session
     );
 
-    if (!response.ok) {
-      return res
-        .status(response.status)
-        .json(data);
-    }
+    const data = await response.json();
+    fs.unlink(req.file.path, () => {});
 
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
-
   } catch (error) {
-
-    fs.unlink(
-      req.file.path,
-      () => {}
-    );
-
-    res.status(500).json({
-      error: error.message
-    });
+    fs.unlink(req.file.path, () => {});
+    res.status(500).json({ error: error.message });
   }
 }
-
-/* ---------------------------------------------------------
-   IMAGE
---------------------------------------------------------- */
 
 app.post(
   "/api/listings/:listingId/image",
   upload.single("image"),
-  (req, res) =>
-    uploadToEtsy(
-      req,
-      res,
-      "image"
-    )
+  (req, res) => uploadToEtsy(req, res, "image")
 );
-
-/* ---------------------------------------------------------
-   DIGITAL FILE
---------------------------------------------------------- */
 
 app.post(
   "/api/listings/:listingId/file",
   upload.single("file"),
-  (req, res) =>
-    uploadToEtsy(
-      req,
-      res,
-      "file"
-    )
+  (req, res) => uploadToEtsy(req, res, "file")
 );
-
-/* ---------------------------------------------------------
-   VIDEO
---------------------------------------------------------- */
 
 app.post(
   "/api/listings/:listingId/video",
   upload.single("video"),
-  (req, res) =>
-    uploadToEtsy(
-      req,
-      res,
-      "video"
-    )
+  (req, res) => uploadToEtsy(req, res, "video")
 );
 
-/* ---------------------------------------------------------
-   UPDATE LISTING
---------------------------------------------------------- */
+app.patch("/api/listings/:listingId", async (req, res) => {
+  try {
+    const session = await getUsableSession(req, res);
+    if (!session) return res.status(401).json({ error: "Not connected" });
 
-app.patch(
-  "/api/listings/:listingId",
-  async (req, res) => {
+    const { shop_id, ...updates } = req.body;
+    if (!shop_id) return res.status(400).json({ error: "shop_id is required" });
 
-    try {
+    const form = new URLSearchParams();
 
-      const session =
-        getSession(req);
-
-      if (!session?.accessToken) {
-        return res.status(401).json({
-          error: "Not connected"
-        });
-      }
-
-      const {
-        shop_id,
-        ...updates
-      } = req.body;
-
-      if (!shop_id) {
-        return res.status(400).json({
-          error:
-            "shop_id is required"
-        });
-      }
-
-      const form =
-        new URLSearchParams();
-
-      for (
-        const [key, value]
-        of Object.entries(updates)
-      ) {
-
-        if (
-          value === undefined ||
-          value === null ||
-          value === ""
-        ) {
-          continue;
-        }
-
-        form.set(
-          key,
-          Array.isArray(value)
-            ? value.join(",")
-            : String(value)
-        );
-      }
-
-      const response =
-        await etsyFetch(
-          `https://api.etsy.com/v3/application/shops/${shop_id}/listings/${req.params.listingId}`,
-          {
-            method: "PATCH",
-
-            headers: {
-              "Content-Type":
-                "application/x-www-form-urlencoded; charset=utf-8"
-            },
-
-            body: form
-          },
-          session
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        return res
-          .status(response.status)
-          .json(data);
-      }
-
-      res.json(data);
-
-    } catch (error) {
-
-      res.status(500).json({
-        error: error.message
-      });
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined || value === null || value === "") continue;
+      form.set(key, Array.isArray(value) ? value.join(",") : String(value));
     }
+
+    const response = await etsyFetch(
+      `https://api.etsy.com/v3/application/shops/${shop_id}/listings/${req.params.listingId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
+        },
+        body: form
+      },
+      session
+    );
+
+    const data = await response.json();
+    if (!response.ok) return res.status(response.status).json(data);
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
-/* ---------------------------------------------------------
-   LOCAL SERVER
---------------------------------------------------------- */
-
-if (
-  process.env.VERCEL !== "1"
-) {
-  app.listen(
-    PORT,
-    () => {
-      console.log(
-        `Etsy Listing Uploader running at http://localhost:${PORT}`
-      );
-    }
-  );
+if (process.env.VERCEL !== "1") {
+  const port = process.env.PORT || 3003;
+  app.listen(port, () => {
+    console.log(`Etsy Listing Uploader running on port ${port}`);
+  });
 }
 
 export default app;
